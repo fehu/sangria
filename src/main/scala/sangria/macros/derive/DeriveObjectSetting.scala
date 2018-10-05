@@ -1,7 +1,9 @@
 package sangria.macros.derive
 
+import language.higherKinds
+
 import sangria.execution.FieldTag
-import sangria.schema.{Args, PossibleInterface, Field}
+import sangria.schema.{Action, Args, PossibleInterface, Field}
 
 sealed trait DeriveObjectSetting[Ctx, Val]
 
@@ -28,3 +30,15 @@ case class MethodArgumentDescription[Ctx, Val](methodName: String, argName: Stri
 case class MethodArgumentsDescription[Ctx, Val](methodName: String, descriptions: (String, String)*) extends DeriveObjectSetting[Ctx, Val]
 case class MethodArgumentDefault[Ctx, Val, Arg](methodName: String, argName: String, default: Arg) extends DeriveObjectSetting[Ctx, Val]
 case class MethodArgument[Ctx, Val, Arg](methodName: String, argName: String, description: String, default: Arg) extends DeriveObjectSetting[Ctx, Val]
+
+case class Subscription[Ctx, Val, S[_], T, R](fieldName: String, prepare: S[T] => S[R]) extends DeriveObjectSetting[Ctx, Val]
+object Subscription {
+  def apply[S[_], T]: Builder[S, T] = new Builder
+
+  protected class Builder[S[_], T] {
+    def apply[Ctx, Val, R](fieldName: String, prepare: S[T] => S[R]): Subscription[Ctx, Val, S, T, R] = unexpected
+    def apply[Ctx, Val](fieldName: String): Subscription[Ctx, Val, S, T, Action[Ctx, T]] = unexpected
+
+    private def unexpected = sys.error("don't use it outside of macro derivation settings")
+  }
+}

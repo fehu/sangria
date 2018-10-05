@@ -113,18 +113,29 @@ class DeriveObjectTypeMacro(context: blackbox.Context) extends {
             }
           }
 
-          q"""
-            sangria.schema.Field[$ctxType, $valType, $actualFieldType, $actualFieldType](
-              $fieldName,
-              implicitly[sangria.macros.derive.GraphQLOutputTypeLookup[$actualFieldType]].graphqlType,
-              ${configDescr orElse annotationDescr},
-              $args,
-              $resolve,
-              Nil,
-              $configTags ++ $annotationTags,
-              $complexity,
-              $configDocDepr orElse $configDepr orElse $annotationDepr)
-          """
+          def defineField(build: TermName, tparams: Type*)(resolveTree: Tree) =
+            q"""
+              sangria.schema.Field.$build[..$tparams](
+                $fieldName,
+                implicitly[sangria.macros.derive.GraphQLOutputTypeLookup[$actualFieldType]].graphqlType,
+                ${configDescr orElse annotationDescr},
+                $args,
+                $resolveTree,
+                Nil,
+                $configTags ++ $annotationTags,
+                $complexity,
+                $configDocDepr orElse $configDepr orElse $annotationDepr)
+            """
+
+          val subscription = config.collect{case MacroSubscription(`name`, tpe, prepare, _) ⇒ tpe → prepare}.lastOption
+
+          subscription match {
+            case Some((subsType, prepareTree)) =>
+              val streamSourceType = AppliedTypeTree(TypeTree(subsType), List(TypeTree(actualFieldType))).tpe
+              defineField("subs", ctxType, valType, streamSourceType, actualFieldType, actualFieldType)(q"$resolve andThen $prepareTree")
+            case None =>
+              defineField("apply", ctxType, valType, actualFieldType, actualFieldType)(resolve)
+          }
         }
 
         val allFields = classFields ++ additionalFields(config)
@@ -323,6 +334,9 @@ class DeriveObjectTypeMacro(context: blackbox.Context) extends {
       case MacroMethodArgument(methodName, argName, _, _, _, pos) ⇒
         validateHasArgument(pos, methodName, argName)
 
+      case MacroSubscription(fieldName, _, _, pos) if !knownMembersSet.contains(fieldName) ⇒
+        unknownMember(pos, fieldName) :: Nil
+
       case _ ⇒ Nil
     }
   }
@@ -403,6 +417,13 @@ class DeriveObjectTypeMacro(context: blackbox.Context) extends {
     case tree @ q"$setting.apply[$_, $_, ${arg: Type}](${methodName: String}, ${argName: String}, $description, $default)" if checkSetting[MethodArgument.type](setting) ⇒
       Right(MacroMethodArgument(methodName, argName, description, arg, default, tree.pos))
 
+    case tree @ q"$setting.apply[$_, $_, ${subs: Type}, $_, $_](${methodName: String}, $prepare)" if checkSetting[Subscription.type](setting) ⇒
+      Right(MacroSubscription(methodName, subs, prepare, tree.pos))
+    case tree @ q"$setting.apply[${subs: Type}, $_].apply[$_, $_, $_](${methodName: String}, $prepare)" if checkSetting[Subscription.type](setting) ⇒
+      Right(MacroSubscription(methodName, subs, prepare, tree.pos))
+    case tree @ q"$setting.apply[${subs: Type}, $t].apply[$ctx, $_](${methodName: String})" if checkSetting[Subscription.type](setting) ⇒
+      Right(MacroSubscription(methodName, subs, q"_.map(_root_.sangria.schema.Action.apply[$ctx, $t](_))", tree.pos))
+
     case tree ⇒ Left(tree.pos →
       "Unsupported shape of derivation config. Please define subclasses of `DeriveObjectTypeSetting` directly in the argument list of the macro.")
   }
@@ -440,6 +461,8 @@ class DeriveObjectTypeMacro(context: blackbox.Context) extends {
   case class MacroMethodArgumentsDescription(methodName: String, descriptions: Map[String, Tree], pos: Position) extends MacroDeriveObjectSetting
   case class MacroMethodArgumentDefault(methodName: String, argName: String, defaultType: Type, default: Tree, pos: Position) extends MacroDeriveObjectSetting
   case class MacroMethodArgument(methodName: String, argName: String, description: Tree, defaultType: Type, default: Tree, pos: Position) extends MacroDeriveObjectSetting
+
+  case class MacroSubscription(fieldName: String, streamType: Type, prepare: Tree, pos: Position) extends MacroDeriveObjectSetting
 
   private def collectArgRename(config: Seq[MacroDeriveObjectSetting], methodName: String, argName: String) = config.collect{
     case MacroMethodArgumentRename(`methodName`, `argName`, newName, _) => newName
